@@ -2,12 +2,12 @@ import torch
 import torch.nn as nn
 
 class Network(nn.Module):
-    def __init__(self, n_input, n_hidden, n_output):
+    def __init__(self, input_size, hidden_size, output_size):
         super(Network, self).__init__()
         
-        self.C1 = nn.Linear(n_input, n_hidden)
-        self.C2 = nn.Linear(n_hidden, n_hidden)
-        self.C3 = nn.Linear(n_hidden, n_output)
+        self.C1 = nn.Linear(input_size, hidden_size)
+        self.C2 = nn.Linear(hidden_size, hidden_size)
+        self.C3 = nn.Linear(hidden_size, output_size)
 
         self.relu = nn.ReLU(inplace=True)
 

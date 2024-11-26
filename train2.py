@@ -1,4 +1,4 @@
-import os
+import shutil
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,91 +7,50 @@ import time
 from tqdm import tqdm
 import model
 try:
-    from nvitop import Device
-    NVITOP = True
+    import nvidia_smi
+    NVIDIA_SMI = True
 except:
-    NVITOP = False
+    NVIDIA_SMI = False
 from collections import OrderedDict
 import pathlib
+import os
 import matplotlib.pyplot as pl
-try:    
-    from telegram.ext import ApplicationBuilder, CommandHandler
-    import asyncio
+import threading
+try:
+    import telegram
+    from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
     TELEGRAM_BOT = True
 except:
     TELEGRAM_BOT = False
 
-# class TelegramBot(object):
-#     def __init__(self):
-#         self.token = os.environ['TELEGRAM_TOKEN']
-#         self.chat_id = os.environ['TELEGRAM_CHATID']
-#         self.bot = telegram.Bot(token=self.token)
-#         print("Telegram bot initialized")
-
-#     async def sendmessage(self, text):
-#         await self.bot.send_message(chat_id=self.chat_id, text=text)
-
-#     async def sendimage(self, image):
-#         await self.bot.send_photo(chat_id=self.chat_id, photo=open(image, 'rb'))
-
-#     def send_message(self, text):
-#         asyncio.run(self.sendmessage(text))
-
-#     def send_image(self, image):
-#         asyncio.run(self.sendimage(image))
-
-from matplotlib.lines import Line2D
-def plot_grad_flow(named_parameters):
-    '''Plots the gradients flowing through different layers in the net during training.
-    Can be used for checking for possible gradient vanishing / exploding problems.
-    
-    Usage: Plug this function in Trainer class after loss.backwards() as 
-    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
-    ave_grads = []
-    max_grads= []
-    layers = []
-    for n, p in named_parameters:
-        if(p.requires_grad) and ("bias" not in n):
-        # if(p.requires_grad):
-            layers.append(n)
-            ave_grads.append(p.grad.abs().mean().item())
-            max_grads.append(p.grad.abs().max().item())
-    pl.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
-    pl.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
-    pl.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
-    pl.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
-    pl.xlim(left=0, right=len(ave_grads))
-    pl.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
-    pl.xlabel("Layers")
-    pl.ylabel("average gradient")
-    pl.title("Gradient flow")
-    pl.grid(True)
-    pl.legend([Line2D([0], [0], color="c", lw=4),
-                Line2D([0], [0], color="b", lw=4),
-                Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
-
 class TelegramBot(object):
-    def __init__(self):
-        self.token = os.environ['TELEGRAM_TOKEN']
-        self.chat_id = os.environ['TELEGRAM_CHATID']
-                
-    async def sendmessage(self, text):        
-        await self.application.bot.sendMessage(chat_id=self.chat_id, text=text)
+
+    def __init__(self) -> None:
+        self.token = '1288438831:AAFOJgulfJojpNGk4zRVrCj-bImqn6RcjAE'
+        self.chat_id = '-468700262'
+
+        self.updater = Updater(token=self.token)
+        self.updater.dispatcher.add_handler(CommandHandler('stop', self.stop_training))
+
+        self.updater.start_polling()
+        self.bot_active = True
+        
+        print('Telegram bot started')
+
+    def send_message(self, message):
+        self.updater.bot.send_message(chat_id=self.chat_id, text=message)
+
+    def send_image(self, image):
+        pass
+        # self.updater.bot.send_photo(chat_id=self.chat_id, photo=open(image, 'rb'))
 
     def stop_training(self, update, context):
-        self.bot_active = False
-        update.message.reply_text("Stopping training...")
+        update.message.reply_text(" Stopping...")
         self.stop()
         sys.exit()
 
-    def send_message(self, text):
-        self.application = ApplicationBuilder().token(self.token).build()   
-        self.application.add_handler(CommandHandler('stop', self.stop_training))
-        asyncio.run(self.sendmessage(text))
-        
     def stop(self):
         os.kill(os.getpid(), signal.SIGINT)
-    
 
 class Dataset(torch.utils.data.Dataset):
     """
@@ -143,9 +102,10 @@ class Training(object):
         self.smooth = hyperparameters['smooth']
         self.device = torch.device(f"cuda:{self.gpu}" if self.cuda else "cpu")
 
-        if (NVITOP):            
-            self.handle = Device.all()[self.gpu]
-            print(f"Computing in {self.device} : {self.handle.name()}")
+        if (NVIDIA_SMI):
+            nvidia_smi.nvmlInit()
+            self.handle = nvidia_smi.nvmlDeviceGetHandleByIndex(self.gpu)
+            print("Computing in {0} : {1}".format(self.device, nvidia_smi.nvmlDeviceGetName(self.handle)))
         
         self.batch_size = hyperparameters['batch_size']        
                 
@@ -215,27 +175,22 @@ class Training(object):
         
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=self.wd)
         self.loss_fn = nn.MSELoss().to(self.device)
-
-        self.n_batches = len(self.train_loader)
-        self.warmup = hyperparameters['warmup']
-
-        print(f"N. batches : {self.n_batches}")
         
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, self.n_batches * (self.n_epochs - self.warmup), eta_min=0.1*self.lr)
-        warmup = torch.optim.lr_scheduler.LinearLR(self.optimizer, start_factor=1e-3, end_factor=1.0, total_iters=self.warmup * self.n_batches)
-
-        self.scheduler = torch.optim.lr_scheduler.SequentialLR(self.optimizer, schedulers=[warmup, scheduler], milestones=[self.warmup * self.n_batches])
+        # self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=scheduler, gamma=0.5)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, self.n_epochs, eta_min=0.1*self.lr)
 
     def optimize(self):
         self.loss = []
         self.loss_val = []
-        best_loss = 1e100
+        best_loss = 1e100        
         
         print('Model : {0}'.format(self.out_name))
 
         for epoch in range(1, self.n_epochs + 1):            
             loss = self.train(epoch)
-            loss_val = self.test()            
+            loss_val = self.test()
+
+            self.scheduler.step()
 
             checkpoint = {
                 'epoch': epoch + 1,
@@ -245,8 +200,6 @@ class Training(object):
                 'hyperparameters': self.hyperparameters
             }
 
-            torch.save(checkpoint, f'{self.out_name}.pth')
-
             if (loss_val < best_loss):
                 print(f"Saving model {self.out_name}.best.pth")                
                 best_loss = loss_val
@@ -255,6 +208,8 @@ class Training(object):
             if (self.hyperparameters['save_all_epochs']):
                 torch.save(checkpoint, f'{self.out_name}.ep_{epoch}.pth')
 
+        if (TELEGRAM_BOT):
+            self.bot.stop()
 
     def train(self, epoch):
         self.model.train()
@@ -277,22 +232,18 @@ class Training(object):
                     
             loss.backward()
 
-            # plot_grad_flow(self.model.named_parameters())
-
-            # breakpoint()
-
             self.optimizer.step()
-
-            self.scheduler.step()
 
             if (batch_idx == 0):
                 loss_avg = loss.item()
             else:
                 loss_avg = self.smooth * loss.item() + (1.0 - self.smooth) * loss_avg
 
-            if (NVITOP):                
-                gpu_usage = f'{self.handle.gpu_utilization()}'
-                memory_usage = f'{self.handle.memory_used_human()}/{self.handle.memory_total_human()}'
+            if (NVIDIA_SMI):
+                tmp = nvidia_smi.nvmlDeviceGetUtilizationRates(self.handle)
+                gpu_usage = f'{tmp.gpu}'
+                tmp = nvidia_smi.nvmlDeviceGetMemoryInfo(self.handle)
+                memory_usage = f' {tmp.used / tmp.total * 100.0:4.1f}'                
             else:
                 gpu_usage = 'NA'
                 memory_usage = 'NA'
@@ -306,11 +257,10 @@ class Training(object):
             
         self.loss.append(loss_avg)
         
-        if (TELEGRAM_BOT):        
-            print()    
-            self.bot.send_message(f'Model : {self.out_name}\nEp: {epoch} - L={loss_avg:7.4f}')
-            # pl.imsave('test.png', np.random.randn(100,100))
-            # self.bot.send_image('test.png')
+        if (TELEGRAM_BOT):
+            self.bot.send_message(f'Ep: {epoch} - L={loss_avg:7.4f}')
+            pl.imsave('test.png', np.random.randn(100,100))
+            self.bot.send_image('test.png')
 
         return loss_avg
 
@@ -341,7 +291,7 @@ class Training(object):
 if (__name__ == '__main__'):
 
     hyperparameters = {
-        'batch_size': 64,
+        'batch_size': 4096,
         'validation_split': 0.2,
         'gpu': 0,
         'lr': 3e-4,
@@ -351,8 +301,7 @@ if (__name__ == '__main__'):
         'save_all_epochs': True,
         'n_input': 100,
         'n_hidden': 40,
-        'n_output': 2,
-        'warmup': 5
+        'n_output': 2
     }
     
     deepnet = Training(hyperparameters)
