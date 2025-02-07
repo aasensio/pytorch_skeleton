@@ -21,25 +21,6 @@ try:
 except:
     TELEGRAM_BOT = False
 
-# class TelegramBot(object):
-#     def __init__(self):
-#         self.token = os.environ['TELEGRAM_TOKEN']
-#         self.chat_id = os.environ['TELEGRAM_CHATID']
-#         self.bot = telegram.Bot(token=self.token)
-#         print("Telegram bot initialized")
-
-#     async def sendmessage(self, text):
-#         await self.bot.send_message(chat_id=self.chat_id, text=text)
-
-#     async def sendimage(self, image):
-#         await self.bot.send_photo(chat_id=self.chat_id, photo=open(image, 'rb'))
-
-#     def send_message(self, text):
-#         asyncio.run(self.sendmessage(text))
-
-#     def send_image(self, image):
-#         asyncio.run(self.sendimage(image))
-
 from matplotlib.lines import Line2D
 def plot_grad_flow(named_parameters):
     '''Plots the gradients flowing through different layers in the net during training.
@@ -142,6 +123,7 @@ class Training(object):
         self.gpu = hyperparameters['gpu']
         self.smooth = hyperparameters['smooth']
         self.device = torch.device(f"cuda:{self.gpu}" if self.cuda else "cpu")
+        self.use_bot = hyperparameters['bot']
 
         if (NVITOP):            
             self.handle = Device.all()[self.gpu]
@@ -191,7 +173,7 @@ class Training(object):
             self.train_loader = torch.utils.data.DataLoader(self.dataset, sampler=self.train_sampler, batch_size=self.batch_size, shuffle=False, **kwargs)
             self.validation_loader = torch.utils.data.DataLoader(self.dataset, sampler=self.validation_sampler, batch_size=self.batch_size, shuffle=False, **kwargs)
 
-        if (TELEGRAM_BOT):
+        if (TELEGRAM_BOT and self.use_bot):
             self.bot = TelegramBot()
 
     def init_optimize(self):
@@ -306,8 +288,7 @@ class Training(object):
             
         self.loss.append(loss_avg)
         
-        if (TELEGRAM_BOT):        
-            print()    
+        if (TELEGRAM_BOT and self.use_bot):            
             self.bot.send_message(f'Model : {self.out_name}\nEp: {epoch} - L={loss_avg:7.4f}')
             # pl.imsave('test.png', np.random.randn(100,100))
             # self.bot.send_image('test.png')
@@ -352,7 +333,8 @@ if (__name__ == '__main__'):
         'n_input': 100,
         'n_hidden': 40,
         'n_output': 2,
-        'warmup': 5
+        'warmup': 5,
+        'bot': False
     }
     
     deepnet = Training(hyperparameters)

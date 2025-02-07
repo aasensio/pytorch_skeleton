@@ -8,6 +8,8 @@ import torch.utils.data
 import time
 from tqdm import tqdm
 import model
+import glob
+import os
 
 class Testing(object):
     def __init__(self, gpu=0, checkpoint=None):
@@ -16,7 +18,7 @@ class Testing(object):
         self.device = torch.device(f"cuda:{self.gpu}" if self.cuda else "cpu")
 
         if (checkpoint is None):
-            files = glob.glob('trained/*.pth')
+            files = glob.glob('weights/*.pth')
             self.checkpoint = max(files, key=os.path.getctime)
         else:
             self.checkpoint = '{0}'.format(checkpoint)
@@ -41,9 +43,9 @@ class Testing(object):
         
         with torch.no_grad():
 
-            inputs = torch.tensor(y.astype('float32'))
+            inputs = torch.tensor(y.astype('float32')).to(self.device)
             
-            out = self.model(inputs)
+            out = self.model(inputs).cpu().numpy()
 
         f, ax = pl.subplots(nrows=2, ncols=1)
         ax[0].plot(sigma, out[:,0], '.')
@@ -60,6 +62,6 @@ class Testing(object):
             
 if (__name__ == '__main__'):
     
-    deepnet = Testing(gpu=0, checkpoint='trained/2020-01-28-11:38:50.pth')
+    deepnet = Testing(gpu=0, checkpoint=None)
 
     deepnet.test()
